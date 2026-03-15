@@ -9,48 +9,53 @@ from transformer_block import Block
 # print("CUDA available:", torch.cuda.is_available())
 # print("GPU name:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "None")
 
+# Using a Tokenizer
+# why should we use our own tokenizer. Because your dataset can be unique to you
+# Domain specific data or specific data
+#  Eg: Indian specific tokens eg: samosa -> your own tokenizer will understand this
+#  Pretrained tokenizer will not understand this
+import sentencepiece as spm
 
-corpus = [
-    "hello friends how are you",
-    "the tea is very hot",
-    "my name is Aarohi",
-    "the roads of Delhi are busy",
-    "it is raining in Mumbai",
-    "the train is late again",
-    "i love eating samosas and drinking tea",
-    "holi is my favorite festival",
-    "diwali brings lights and sweets",
-    "india won the cricket match"
-]
+import os
+corpus_path = os.path.join(os.path.dirname(__file__), "corpus.txt")
 
-# Join all the tasks together and add <END> at the end of each sentence
-corpus = [s + " <END>" for s in corpus]
-text = " ".join(corpus)
+with open(corpus_path, "r", encoding="utf-8") as f:
+    text = f.read()
 
-# convert words to numbers since AI only understands numbers i.e. tokens
-# Convert the sentences into numbers
-words = list(set(text.split(" ")))
-vocab_size = len(words)
-word2ids = {w:i for i,w in enumerate(words)}
-idx2word = {i: w for w, i in word2ids.items()} 
-# convert the text into numbers
-data = torch.tensor([word2ids[w] for w in text.split()], dtype=torch.long)
-# print(data)
-# print(len(data))
+spm.SentencePieceTrainer.Train(
+    input=corpus_path,
+    model_prefix="tokenizer",
+    vocab_size=40,
+    model_type="bpe"
+)
+
+# tokenizer.model (trained model)
+# Split the words into tokens
+# tokenizer.vocab (tokens)
+
+sp = spm.SentencePieceProcessor()
+# Load the tokenizer model
+sp.load("tokenizer.model")
+
+# Encode the text into tokens
+ids = sp.encode(text, out_type=int) # list
+data = torch.tensor(ids, dtype=torch.long)
+print(data)
+vocab_size = sp.get_piece_size()
+
+# Using pretrained tokenizer
+
 
 
 # context window is how mych data can be stored at a time. i.e. block size
 # LLM will see prev 6 words to generate next 6 words.
 block_size = 6
-
 # your model will have 32 value for each word i.e. related words
 embedding_dim = 32
-
 # number of self attention heads
 n_heads = 2
 # number of transformer blocks
 n_layers = 2
-
 # learning rate
 lr = 1e-3
 
@@ -84,6 +89,9 @@ class TinyLLM(nn.Module):
         # they are random values that are learned during training
         # they are the weights of the neural network
         self.embedding = nn.Embedding(vocab_size, embedding_dim) # (42, 32)
+        # matrix of vocab_size i.e. no of words * 32 floating point values. 
+        # this will be random initially
+        # As you train your mode, the 32 values becomes close to the word
         
         # positional embedding - order of word, position of each word
         # EG: 0 - [32 floating point values]
@@ -96,6 +104,8 @@ class TinyLLM(nn.Module):
         # they are random values that are learned during training
         # they are the weights of the neural network
         self.positional_embedding = nn.Embedding(block_size, embedding_dim) # (6, 32)
+        # matrix of block_size i.e. context window * 32 floating point values. 
+        
         self.block = nn.Sequential(*[Block(embedding_dim, block_size, n_heads) for _ in range(n_layers)])
         # Layer Normalization
         self.ln_f = nn.LayerNorm(embedding_dim)
@@ -162,9 +172,9 @@ class TinyLLM(nn.Module):
             # We apply softmax across the *last dimension* of the data (the list of vocabulary words)
             # to figure out the probability of each individual word being the next word.
             probs = F.softmax(logits, dim=-1)
-            # sample from the distribution
+            # Fetch the word with highest probability
             idx_next = torch.multinomial(probs, num_samples=1)
-            # append the sampled index to the sequence
+            # add the word with highest prob to input sequence. Eg hello -> hello friends -> hello friends how -> hello friends how are ....
             idx = torch.cat((idx, idx_next), dim=1)
         return idx
 
@@ -195,18 +205,23 @@ for step in range(epochs):
     # forward pass
     logits, loss = model(xb, yb)
     # backward pass
-    optimizer.zero_grad(set_to_none=True)
+    optimizer.zero_grad()
+    # update the weights
     loss.backward()
     optimizer.step()
     # print loss every 100 steps
-    # if step % 100 == 0:
-    #     print(f"Step: {step}, Loss: {loss.item()}")
+    if step % 100 == 0:
+        print(f"Step: {step}, Loss: {loss.item()}")
 
+import sentencepiece as spm
+sp = spm.SentencePieceProcessor()
+sp.load("tokenizer.model")
 
 # generate text
-context = torch.tensor([[word2ids['hello']]], dtype=torch.long)
-generated_tokens = model.generate(context, max_new_tokens = 15)
+context = torch.tensor([sp.encode("hello")], dtype=torch.long)
+out = model.generate(context, max_new_tokens=20)
 
-generated_text = " ".join([idx2word[token.item()] for token in generated_tokens[0]])
+print("\nGenerated text:\n")
 
-print(generated_text)
+generated_ids = out[0].tolist()
+print(sp.decode(generated_ids))
